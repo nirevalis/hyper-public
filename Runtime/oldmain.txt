@@ -1,0 +1,364 @@
+#include <Engine/GameEngine.hpp>
+#include <iostream>
+#include <Scene/Scene.hpp>
+#include <Core/Serialization/Stream.hpp>
+#include <Game/LocalPlayer.hpp>
+#include <Game/Server.hpp>
+#include <Asset/AssetRegistry.hpp>
+
+#ifndef SERVER
+#include <imgui.h>
+#include <Renderer/ImGui.hpp>
+#include <backends/imgui_impl_sdl2.h>
+#include <Renderer/FramebufferCache.hpp>
+#include <nvrhi/utils.h>
+#include <SDL2/SDL.h>
+#include <SDL2/SDL_syswm.h>
+#include <Renderer/Devices/D3D12DeviceImpl.hpp>
+#include <Renderer/SceneRenderer.hpp>
+#include <Renderer/Pipelines/RasterPipeline.hpp>
+#include <Renderer/ShaderLibrary.hpp>
+#include <Renderer/Render2D.hpp>
+#include "Renderer/Skybox.hpp"
+#include "Renderer/Assets/TextureAsset.hpp"
+#include "Renderer/Pipelines/HybridStyledPipeline.hpp"
+#include "Renderer/Pipelines/RayTracingPipeline.hpp"
+#endif
+
+static bool client = true;
+
+using namespace Hyper;
+
+class ZombieSharedLayer : public Hyper::ILayer
+{
+public:
+	ZombieSharedLayer() = default;
+	~ZombieSharedLayer() override = default;
+
+	void OnStart() override
+	{
+		INFO("Starting game Zombie 1.0");
+		if (client)
+			INFO("	Client mode");
+		else
+			INFO("	Server mode");
+
+	}
+	void OnExit() override
+	{
+
+	}
+
+	void OnEvent(Hyper::Event& event) override
+	{
+	}
+};
+
+#ifdef SERVER
+class ZombieServerLayer : public Hyper::ILayer
+{
+public:
+	ZombieSharedLayer& Game;
+
+	ZombieServerLayer(ZombieSharedLayer& game) : Game(game)
+	{
+
+	}
+
+	~ZombieServerLayer() override = default;
+
+	Server Server;
+
+	void OnStart() override
+	{
+
+	}
+
+	void OnEvent(Hyper::Event& event)
+	{
+		Hyper::GameEngine& engine = Hyper::GameEngine::Get();
+
+		if (event.GetEventType() == EventType::FixedUpdate)
+		{
+			//Server.BroadcastChatMessage("Server", "hello all");
+		}
+
+		if (event.GetEventType() == EventType::NetworkClientConnected)
+		{
+
+		}
+
+		if (event.GetEventType() == EventType::NetworkServerPacketReceive)
+		{
+			auto& netEv = static_cast< NetworkServerPacketReceive& >(event);
+			Server.OnPacketReceive(netEv);
+		}
+
+		Server.Scene->OnEvent(event);
+	}
+
+	void OnExit() override
+	{
+
+	}
+};
+#endif
+
+#ifndef SERVER
+
+struct Window
+{
+private:
+
+public:
+
+};
+
+#include <stb/stb_image.h>
+class ZombieGameLayer : public Hyper::ILayer
+{
+public:
+	ZombieSharedLayer& Game;
+
+	ZombieGameLayer(ZombieSharedLayer& game) : Game(game)
+	{
+
+	}
+	~ZombieGameLayer() override = default;
+
+
+	D3D12SwapchainImpl* SwapchainImpl;
+	D3D12DeviceImpl DeviceImpl;
+	nvrhi::CommandListHandle MainContext;
+	std::vector< nvrhi::FramebufferHandle> SwapChainFramebuffer;
+	nvrhi::DeviceHandle Device;
+	nvrhi::TextureHandle Texture;
+	ScriptablePipeline* RTPipeline;
+	Scope<SceneRenderer> Renderer;
+	SDL_Window* Window;
+	SDL_Event SDLEvent;
+	LocalPlayer LocalPlayer;
+	Scope<Render2D> Renderer2D;
+	ImGuiNVRHI rende;
+
+	void OnStart() override
+	{
+		Hyper::GameEngine& engine = Hyper::GameEngine::Get();
+		SDL_Init(SDL_INIT_VIDEO);
+
+		Window = SDL_CreateWindow("Hyper", 0, 0, 1920, 1080, 0);
+		Device = DeviceImpl.CreateDevice();
+		engine.GetDeviceHelper().SetDevice(Device);
+
+
+		ShaderLibrary::LoadFrom(Device, "D:/Hyper/Game/Compiled/Shaders");
+
+		Renderer2D = CreateScope<Render2D>(Device);
+
+
+
+		MainContext = Device->createCommandList();
+
+		AssetRegistry::LoadAndFlush("asset_test.hpr");
+		AssetRegistry::LoadAndFlush("bloem_field_sunrise_2k.hpr");
+		AssetRegistry::LoadAndFlush("BRDF_LUT.hpr");
+		AssetRegistry::LoadAndFlush("ird.hpr");
+		AssetRegistry::LoadAndFlush("Resources/testset.hpr");
+		AssetRegistry::LoadAndFlush("Resources/ak47.hpr");
+
+		/*AssetRegistry::LoadAndFlush("Resources/Skybox/0.hpr");
+		AssetRegistry::LoadAndFlush("Resources/Skybox/1.hpr");
+		AssetRegistry::LoadAndFlush("Resources/Skybox/2.hpr");
+		AssetRegistry::LoadAndFlush("Resources/Skybox/3.hpr");
+		AssetRegistry::LoadAndFlush("Resources/Skybox/4.hpr");
+		AssetRegistry::LoadAndFlush("Resources/Skybox/5.hpr");
+		AssetRegistry::LoadAndFlush("Resources/Skybox/irradiance/0.hpr");
+		AssetRegistry::LoadAndFlush("Resources/Skybox/irradiance/1.hpr");
+		AssetRegistry::LoadAndFlush("Resources/Skybox/irradiance/2.hpr");
+		AssetRegistry::LoadAndFlush("Resources/Skybox/irradiance/3.hpr");
+		AssetRegistry::LoadAndFlush("Resources/Skybox/irradiance/4.hpr");
+		AssetRegistry::LoadAndFlush("Resources/Skybox/irradiance/5.hpr");*/
+
+		RTPipeline = new HybridStyledPipeline();
+
+		SDL_SysWMinfo sdlinfo;
+		SDL_version sdlver;
+		SDL_VERSION(&sdlver);
+		sdlinfo.version = sdlver;
+
+		SDL_GetWindowWMInfo(Window, &sdlinfo);
+
+		void* hwnd = sdlinfo.info.win.window;
+
+		SwapchainImpl = dynamic_cast< D3D12SwapchainImpl* >(DeviceImpl.CreateSwapchain(hwnd));
+
+		PlayerConnection connection;
+#ifdef ALTERNATE_USERNAME
+		connection.Name = "Dummy";
+#else
+		connection.Name = "tecnessino";
+#endif
+
+		LocalPlayer.EstablishConnection(connection);
+		Renderer = CreateScope<SceneRenderer>(LocalPlayer.Scene, *RTPipeline);
+
+		IMGUI_CHECKVERSION();
+		ImGui::CreateContext();
+		ImGuiIO& io = ImGui::GetIO();
+		io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
+		io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
+		io.FontGlobalScale = 1;
+
+		ImGui_ImplSDL2_InitForD3D(Window);
+
+		rende.Init(Device);
+	}
+
+	void OnExit() override
+	{
+
+	}
+
+	void OnEvent(Hyper::Event& event) override
+	{
+		Hyper::GameEngine& engine = Hyper::GameEngine::Get();
+
+		if (event.GetEventType() == EventType::Update)
+		{
+			Hyper::UpdateEvent& update = static_cast< Hyper::UpdateEvent& >(event);
+			while (SDL_PollEvent(&SDLEvent))
+			{
+				/*switch (SDLEvent.type)
+				{
+				case SDL_EVENT_KEY_DOWN:
+				{
+					auto& transform = LocalPlayer.Scene->Camera.GetTransform();  // Get reference to the transform once
+
+					Float3 forward = transform.GetForward();
+					Float3 right = transform.GetRight();
+					Float3 up = transform.GetUp();
+
+					float velocity = 10.0f * update.DeltaTime;
+
+					if (SDLEvent.key.scancode == SDL_SCANCODE_W) transform.Move(forward * velocity);
+					if (SDLEvent.key.scancode == SDL_SCANCODE_S) transform.Move(-(forward * velocity));
+					if (SDLEvent.key.scancode == SDL_SCANCODE_D) transform.Move(right * velocity);
+					if (SDLEvent.key.scancode == SDL_SCANCODE_A) transform.Move(-(right * velocity));
+					if (SDLEvent.key.scancode == SDL_SCANCODE_Q) transform.Move(up * velocity);
+					if (SDLEvent.key.scancode == SDL_SCANCODE_E) transform.Move(-(up * velocity));
+					break;
+
+				}
+
+				case SDL_EVENT_MOUSE_MOTION:
+				{
+					float xoffset = ( float )SDLEvent.motion.xrel * 1;
+					float yoffset = ( float )-SDLEvent.motion.yrel * 1;
+
+					LocalPlayer.Scene->Camera.GetTransform().Orientation = LocalPlayer.Scene->Camera.GetTransform().Orientation + Float3(yoffset, xoffset, 0);
+					//LocalPlayer.Scene->Camera.GetTransform().Orientation.Y += yoffset;
+
+					// Clamp pitch to prevent flipping
+					if (LocalPlayer.Scene->Camera.GetTransform().Orientation.X > 89.0f) LocalPlayer.Scene->Camera.GetTransform().Orientation.X = 89.0f;
+					if (LocalPlayer.Scene->Camera.GetTransform().Orientation.X < -89.0f) LocalPlayer.Scene->Camera.GetTransform().Orientation.X = -89.0f;
+					break;
+					break;
+				}
+				}*/
+			}
+
+			Device->runGarbageCollection();
+
+			SwapchainImpl->BeginFrame();
+
+			MainContext->open();
+
+
+			nvrhi::FramebufferDesc desc {};
+			desc.addColorAttachment(SwapchainImpl->GetCurrentImage());
+
+			auto framebuffer = FramebufferCache::Get(Device, desc);
+
+			nvrhi::utils::ClearColorAttachment(MainContext, framebuffer, 0, nvrhi::Color::Color(0, 0, 0, 1));
+
+			Renderer->Render(MainContext, framebuffer);
+
+			{
+				MinimalGraphicsContext gfx {};
+				gfx.Context = MainContext;
+				gfx.Device = Device;
+				gfx.State.setViewport(nvrhi::ViewportState().addViewportAndScissorRect(nvrhi::Viewport(1920, 1080)));
+				gfx.State.setFramebuffer(framebuffer);
+
+				Renderer2D->Begin(gfx);
+
+
+
+				Renderer2D->DrawRect(Hyper::Rectangle { 100,100,24,24 }, Color::FromRGB(255, 0, 0));
+				Renderer2D->DrawTexture(Hyper::Rectangle { 200,200,200,200 }, AssetRegistry::GetAs<TextureAsset>("man")->GetTexture());
+				Renderer2D->DrawTexture(Hyper::Rectangle { 400,200,200,200 }, AssetRegistry::GetAs<TextureAsset>("man")->GetTexture());
+
+				Renderer2D->Execute(gfx);
+
+				rende.UpdateFontTexture(ImGui::GetCurrentContext(), gfx);
+
+				ImGui_ImplSDL2_NewFrame();
+				ImGui::NewFrame();
+
+				ImGui::ShowDemoWindow(); // Show demo window! :)
+
+				ImGui::Render();
+				rende.Render(ImGui::GetCurrentContext(), gfx);
+			}
+
+			MainContext->close();
+			Device->executeCommandList(MainContext);
+
+			SwapchainImpl->Present();
+
+		}
+
+		if (event.GetEventType() == EventType::FixedUpdate)
+		{
+
+		}
+
+		if (event.GetEventType() == EventType::NetworkClientPacketReceive)
+		{
+			auto& netEv = static_cast< NetworkClientPacketReceive& >(event);
+			LocalPlayer.OnPacketReceive(netEv);
+		}
+
+		LocalPlayer.Scene->OnEvent(event);
+	}
+};
+#endif
+
+#undef main
+int main(int argc, const char** argv)
+{
+#ifdef SERVER
+	client = false;
+#endif
+	Hyper::GameEngine engine(client);
+
+	ZombieSharedLayer* shared = new ZombieSharedLayer();
+	engine.GetLayerStack().PushLayer(shared);
+
+	if (client)
+	{
+#ifndef SERVER
+		engine.GetLayerStack().PushOverlay(new ZombieGameLayer(*shared));
+#endif
+	}
+	else
+	{
+#ifdef SERVER
+		engine.GetLayerStack().PushOverlay(new ZombieServerLayer(*shared));
+#endif
+	}
+
+	engine.Start();
+
+	return 0;
+}
